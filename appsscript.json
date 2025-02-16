@@ -1,0 +1,24 @@
+{
+    "timeZone": "Europe/Warsaw",
+    "dependencies": {},
+    "exceptionLogging": "STACKDRIVER",
+    "oauthScopes": [
+        "https://www.googleapis.com/auth/gmail.labels",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/script.scriptapp",
+        "https://www.googleapis.com/auth/script.external_request",
+        "https://www.googleapis.com/auth/gmail.addons.execute"
+    ],
+    "gmail": {
+        "name": "Sellasist Gmail Add-on",
+        "logoUrl": "https://www.gstatic.com/images/icons/material/system/1x/label_googblue_24dp.png",
+        "contextualTriggers": [
+            {
+                "unconditional": {},
+                "onTriggerFunction": "checkNewEmails"
+            }
+        ],
+        "primaryColor": "#4285f4"
+    }
+}
