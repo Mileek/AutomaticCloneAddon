@@ -5,31 +5,37 @@
  * @param {string} SUBJECT_TEXT - Tytuł wiadomości po której skrypt będzie miał szukać, to jest MEGA WAŻNE JBC
  * @param {int} DAYS_TO_SEARCH - Wiadomości z ilu dni mają być brane pod uwagę?
  * @param {int} CHECK_EMAIL_INTERVAL - Interwał sprawdzania maili, minimum to 1h (blokada od google)
- * @param {string} PROCESSED_LABEL - Żeby nie tworzyć duplikatów, oznaczamy maila jako przetworzony
  */
 var FIRST_WEBSITE_NAME = "surix";
 var SECOND_WEBSITE_NAME = "Milus";
 var SUBJECT_TEXT = "Order clone"; // Tytuł maila do wyszukiwania
 var DAYS_TO_SEARCH = 2; // 2 dni do tyłu, czyli szukaj maili z ostatnich 2 dni
 var CHECK_EMAIL_INTERVAL = 1; // Minimalny odstęp to 1h
-var PROCESSED_LABEL = "Processed_Order"; // Labelka do oznaczania przetworzonych maili
 
 /**
  * Tworzenie UI karty i funkcji dla przycisków Start/Stop
 **/
 function createHomepage()
 {
-    const card = CardService.newCardBuilder();
-    const section = CardService.newCardSection()
-        .addWidget(CardService.newTextButton()
-            .setText("Wyślij i monitoruj")
-            .setOnClickAction(CardService.newAction().setFunctionName("startMonitoring")))
-        .addWidget(CardService.newTextButton()
-            .setText("Przestań monitorować")
-            .setOnClickAction(CardService.newAction().setFunctionName("stopMonitoring")));
+    var card = CardService.newCardBuilder();
+
+    var section = CardService.newCardSection()
+        .addWidget(CardService.newTextParagraph()
+            .setText("Naciśnij przycisk aby włączyć automatyczne klonowanie co godzinę."))
+        .addWidget(CardService.newButtonSet()
+            .addButton(CardService.newTextButton()
+                .setText("Wyślij i monitoruj")
+                .setOnClickAction(CardService.newAction()
+                    .setFunctionName("startMonitoring"))
+                .setTextButtonStyle(CardService.TextButtonStyle.FILLED))
+            .addButton(CardService.newTextButton()
+                .setText("Przestań monitorować")
+                .setOnClickAction(CardService.newAction()
+                    .setFunctionName("stopMonitoring"))));
 
     card.addSection(section);
     return card.build();
+
 }
 
 /**
@@ -100,37 +106,10 @@ function getSearchDate()
 }
 
 /**
- * tworzenie labela, raczej nie potrzebne
- */
-function createProcessedLabel()
-{
-    try
-    {
-        var label = GmailApp.getUserLabelByName(PROCESSED_LABEL);
-        if (!label)
-        {
-            label = GmailApp.createLabel(PROCESSED_LABEL);
-        }
-        return label;
-    } catch (err)
-    {
-        Logger.log('Error creating label: ' + err);
-        return null;
-    }
-}
-
-/**
  * Główna funkcja sprawdzająca maile
  */
 function checkNewEmails()
 {
-    // const label = createProcessedLabel();
-    // if (!label)
-    // {
-    //     Logger.log('Could not create/get label');
-    //     return;
-    // }
-
     var searchDate = getSearchDate();
     var searchQuery = 'in:anywhere subject:"' + SUBJECT_TEXT + '" after:' + searchDate;
 
@@ -141,19 +120,9 @@ function checkNewEmails()
         const messages = thread.getMessages();
         messages.forEach(function (message)
         {
-            // Sprawdź czy wątek ma już naszą etykietę
-            if (thread.getLabels().some(function (threadLabel)
-            {
-                return threadLabel.getName() === PROCESSED_LABEL;
-            }))
-            {
-                return;
-            }
-
             if (processEmail(message))
             {
-                // Oznacz wątek etykietą
-                // label.addToThread(thread);
+                Logger.log('Order added.');
             }
         });
     });
@@ -183,20 +152,29 @@ function processEmail(message)
         return false;
     }
 
-    // Dodaj email do danych zamówienia
-    orderData.customerEmail = customerEmail;
-
     const result = createOrderInSecondSystem(orderData);
     return result !== null;
 }
 
 /**
- * Funkcja przeszukująca treść maila w celu znalezienia adresu email klienta
+ * Funkcja przeszukująca treść maila w celu znalezienia adresu email klienta, !ważne w treściu musi być "Email: " inaczej go nie odnajdzie
+ * Nie funkcja nie zamienia ciągu znaków na ToLower ani ToUpper, więc ciąg musi być idealny
  * @param {string} body Treść wiadomości email, jej body, czyli SAMA treśćbez reply to itp, ciągły tekst
 **/
 function extractCustomerEmail(body)
 {
     var match = body.match(/[eE]mail:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+    return match ? match[1] : null;
+}
+
+/**
+ * Wyciągnij ID zamówienia z treści maila, !ważne w treściu musi być "ID: " inaczej go nie odnajdzie
+ * Nie funkcja nie zamienia ciągu znaków na ToLower ani ToUpper, więc ciąg musi być idealny
+ * @param {string} body Treść wiadomości email, jej body, czyli SAMA treśćbez reply to itp, ciągły tekst
+ */
+function extractOrderId(body)
+{
+    const match = body.match(/ID[:\s]*([A-Za-z0-9]+)/i);
     return match ? match[1] : null;
 }
 
@@ -220,16 +198,6 @@ function getFilterDate()
 
     Logger.log('Date range: ' + dateFrom + ' to ' + dateTo);
     return [dateFrom, dateTo];
-}
-
-/**
- * Wyciągnij ID zamówienia z treści maila
- * @param {string} body Treść maila
- */
-function extractOrderId(body)
-{
-    const match = body.match(/ID[:\s]*([A-Za-z0-9]+)/i);
-    return match ? match[1] : null;
 }
 
 /**
@@ -324,9 +292,6 @@ function mapOrderData(sourceOrder)
 
     // Zachowujemy oryginalną strukturę statusu
     mappedOrder.status = sourceOrder.status;
-
-    // Usuwamy niepotrzebne pola
-    delete mappedOrder.customerEmail;
 
     return mappedOrder;
 }
