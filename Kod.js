@@ -6,11 +6,12 @@
  * @param {int} DAYS_TO_SEARCH - Wiadomości z ilu dni mają być brane pod uwagę?
  * @param {int} CHECK_EMAIL_INTERVAL - Interwał sprawdzania maili, minimum to 1h (blokada od google)
  */
-var FIRST_WEBSITE_NAME = "surix";
-var SECOND_WEBSITE_NAME = "Milus";
+var FIRST_WEBSITE_NAME = "milus2";
+var SECOND_WEBSITE_NAME = "milus3";
 var SUBJECT_TEXT = "Order clone"; // Tytuł maila do wyszukiwania
 var DAYS_TO_SEARCH = 2; // 2 dni do tyłu, czyli szukaj maili z ostatnich 2 dni
 var CHECK_EMAIL_INTERVAL = 1; // Minimalny odstęp to 1h
+var PROCESSED_LABEL = "OrderCloneProcessed";
 
 /**
  * Tworzenie UI karty i funkcji dla przycisków Start/Stop
@@ -115,7 +116,10 @@ function checkNewEmails()
 
     var threads = GmailApp.search(searchQuery);
 
-    threads.forEach(function (thread)
+    // Konwertujemy na tablicę i odwracamy kolejność, żeby dodawało wszystko od NAJSTARSZEGO
+    var reversedThreads = Array.prototype.slice.call(threads).reverse();
+
+    reversedThreads.forEach(function (thread)
     {
         const messages = thread.getMessages();
         messages.forEach(function (message)
@@ -134,6 +138,13 @@ function checkNewEmails()
  */
 function processEmail(message)
 {
+    // Sprawdź czy mail był już przetworzony
+    if (isEmailProcessed(message))
+    {
+        Logger.log('Email already processed, skipping: ' + message.getId());
+        return false;
+    }
+
     const body = message.getPlainBody();
     const orderId = extractOrderId(body);
     const customerEmail = extractCustomerEmail(body);
@@ -145,15 +156,52 @@ function processEmail(message)
     }
 
     var filterDates = getFilterDate();
-    var orderData = getOrderDataFromFirstSystem(customerEmail, filterDates[0], filterDates[1]);
+    var orderData = getOrderDataFromFirstSystem(customerEmail, filterDates[0], filterDates[1], orderId);
 
     if (!orderData)
     {
+        Logger.log('Order not found or invalid data received');
         return false;
     }
 
     const result = createOrderInSecondSystem(orderData);
-    return result !== null;
+    if (result !== null)
+    {
+        // Oznacz mail jako przetworzony
+        markEmailAsProcessed(message);
+        return true;
+    }
+    return false;
+}
+
+function isEmailProcessed(message)
+{
+    // Zamiast sprawdzać etykiety wątku, sprawdzamy własność wiadomości
+    var messageId = message.getId();
+    var userProperties = PropertiesService.getUserProperties();
+    return userProperties.getProperty(messageId) === "processed";
+}
+
+function markEmailAsProcessed(message)
+{
+    // Zapisujemy informację o przetworzeniu konkretnej wiadomości
+    var messageId = message.getId();
+    var userProperties = PropertiesService.getUserProperties();
+    userProperties.setProperty(messageId, "processed");
+
+    // Dodatkowo dodajemy etykietę dla wizualnej informacji
+    var label = getOrCreateLabel();
+    message.getThread().addLabel(label);
+}
+
+function getOrCreateLabel()
+{
+    var label = GmailApp.getUserLabelByName(PROCESSED_LABEL);
+    if (!label)
+    {
+        label = GmailApp.createLabel(PROCESSED_LABEL);
+    }
+    return label;
 }
 
 /**
@@ -204,14 +252,15 @@ function getFilterDate()
  * Pobierz dane z pierwszego systemu
  * @param {string} email to email klienta
  */
-function getOrderDataFromFirstSystem(email, dateFrom, dateTo)
-{
+function getOrderDataFromFirstSystem(email, dateFrom, dateTo, searchOrderId)
+{ // Dodajemy parametr searchOrderId
     var url = "https://" + FIRST_WEBSITE_NAME + ".sellasist.pl/api/v1/orders_with_carts" +
         "?offset=0" +
         "&limit=50" +
         "&email=" + encodeURIComponent(email) +
         "&date_from=" + encodeURIComponent(dateFrom) +
-        "&date_to=" + encodeURIComponent(dateTo);
+        "&date_to=" + encodeURIComponent(dateTo) +
+        "&sort=asc";
 
     const options = {
         method: 'get',
@@ -234,8 +283,26 @@ function getOrderDataFromFirstSystem(email, dateFrom, dateTo)
             return null;
         }
 
-        // Znajdź zamówienie z odpowiednim ID
-        return orders[0]; // Zwracamy pierwsze (najnowsze) zamówienie
+        // Szukamy zamówienia o konkretnym ID
+        var targetOrder = null;
+        for (var i = 0; i < orders.length; i++)
+        {
+            if (orders[i].id === searchOrderId)
+            {
+                targetOrder = orders[i];
+                break;
+            }
+        }
+
+        if (!targetOrder)
+        {
+            Logger.log('Order with ID ' + searchOrderId + ' not found for email: ' + email);
+            return null;
+        }
+
+        Logger.log('Found order with ID: ' + searchOrderId);
+        return targetOrder;
+
     } catch (err)
     {
         Logger.log('Error getting order from first system: ' + err);
@@ -255,43 +322,55 @@ function mapOrderData(sourceOrder)
         return null;
     }
 
-    // Kopiujemy całe zamówienie
-    const mappedOrder = JSON.parse(JSON.stringify(sourceOrder));
-
-    // Modyfikujemy produkty tylko jeśli to konieczne
-    if (Array.isArray(mappedOrder.carts))
-    {
-        mappedOrder.carts = mappedOrder.carts
+    const mappedOrder = {
+        date: sourceOrder.date,
+        status: sourceOrder.status.id, // zmienione na numeryczne ID
+        currency: sourceOrder.payment ? sourceOrder.payment.currency.toLowerCase() : "pln",
+        payment_status: sourceOrder.payment ? sourceOrder.payment.status : "unpaid",
+        paid: sourceOrder.payment ? sourceOrder.payment.paid : null,
+        email: sourceOrder.email,
+        shipment_price: sourceOrder.shipment ? sourceOrder.shipment.total : "0.00",
+        important: false,
+        payment_id: sourceOrder.payment ? sourceOrder.payment.id : null,
+        payment_name: sourceOrder.payment ? sourceOrder.payment.name : null,
+        shipment_id: sourceOrder.shipment ? sourceOrder.shipment.id : null,
+        shipment_name: sourceOrder.shipment ? sourceOrder.shipment.name : null,
+        invoice: null,
+        document_number: null,
+        comment: sourceOrder.comment || "",
+        bill_address: sourceOrder.bill_address,
+        shipment_address: sourceOrder.bill_address, // używamy tego samego adresu
+        pickup_point: null, // opcjonalne
+        total: sourceOrder.total,
+        source: "extsources",
+        carts: Array.isArray(sourceOrder.carts) ? sourceOrder.carts
             .filter(function (cart)
             {
                 return cart && parseFloat(cart.quantity) > 0;
             })
             .map(function (cart)
             {
-                // Tworzymy nowy obiekt zachowując oryginalną strukturę
-                var mappedCart = {
+                return {
                     id: cart.id,
                     product_id: cart.product_id,
                     variant_id: cart.variant_id,
-                    selected_options: cart.selected_options,
                     name: cart.name,
-                    image: cart.image,
                     quantity: cart.quantity,
                     price: cart.price,
+                    tax: cart.tax_rate,
                     weight: cart.weight,
                     ean: cart.ean,
-                    symbol: cart.symbol,
                     catalog_number: cart.catalog_number,
-                    tax_rate: cart.tax_rate,
-                    additional_information: cart.additional_information,
-                    external_offer_id: cart.external_offer_id
+                    stock_update: 1,
+                    additional_information: cart.additional_information
                 };
-                return mappedCart;
-            });
-    }
+            }) : [],
+        additional_fields: [] // opcjonalne
+    };
 
-    // Zachowujemy oryginalną strukturę statusu
-    mappedOrder.status = sourceOrder.status;
+    // Dodaj logging dla debugowania
+    Logger.log('Mapped payment_name: ' + mappedOrder.payment_name);
+    Logger.log('Original payment data: ' + JSON.stringify(sourceOrder.payment));
 
     return mappedOrder;
 }
@@ -330,7 +409,7 @@ function createOrderInSecondSystem(orderData)
         if (responseBody.status === "exist")
         {
             Logger.log('Order already exists with ID: ' + responseBody.order_id);
-            return responseBody; // Zwracamy odpowiedź, żeby oznaczyć mail jako przetworzony
+            return responseBody; // Zwracamy odpowiedź
         }
 
         if (responseCode !== 200 && responseCode !== 201)
